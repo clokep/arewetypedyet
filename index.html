@@ -3,7 +3,7 @@
 
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Are We Async Yet?</title>
+    <title>Are We Typed Yet?</title>
     <script src="moment.min.js"></script>
     <script src="Chart.min.js"></script>
     <script src="chartjs-plugin-zoom.min.js"></script>
@@ -55,9 +55,8 @@
     </div>
 
     <div>
-        Synapse has traditionally used <a href="https://twistedmatrix.com/documents/current/api/twisted.internet.defer.html#inlineCallbacks"><code>inlineCallbacks</code></a>
-        to have readable asynchronous code. Now that only Python 3 is supported, native async / await syntax can be used.
-        This helps identify where performance is going (and helps find errors) due to giving saner stack traces.
+        Synapse has been adding type hints slowly to enforce APIs using mypy.
+        This helps identify progress over time.
     </div>
 
     <div>
@@ -122,7 +121,7 @@
                 responsive: true,
                 title: {
                     display: true,
-                    text: 'Are We Async Yet?'
+                    text: 'Are We Typed Yet?'
                 },
                 tooltips: {
                     mode: 'index',
@@ -163,11 +162,11 @@
             }
         };
 
-        function sum_data(data, module) {
+        function sum_data(data, idx, module) {
             let sum = 0;
             for (let moduleName in data) {
-                if (moduleName.startsWith(module + "/")) {
-                    sum += data[moduleName];
+                if (moduleName.startsWith(module + ".")) {
+                    sum += data[moduleName][idx];
                 }
             }
             return sum;
@@ -195,23 +194,27 @@
                     chartContent.appendChild(canvas);
 
                     // Generate the data points from the raw data.
+                    // <total>, <precise>, <imprecise>, <any>, <empty>, <unanalyzed>
                     let labels = [];
-                    let inlineCallbacks = [];
-                    let deferreds = []
-                    let asyncDefs = [];
+                    let precise = [];
+                    let imprecise = []
+                    let any = [];
+                    let unanalyzed = [];
 
                     for (let d of project_data.reverse()) {
                         labels.push(d[1]);
                         // If looking at all data, pull the total out, otherwise
                         // look for module specific data.
                         if (id.endsWith('-all')) {
-                            inlineCallbacks.push(d[2][0]);
-                            deferreds.push(d[3][0]);
-                            asyncDefs.push(d[4][0]);
+                            precise.push(d[2][1]);
+                            imprecise.push(d[2][2]);
+                            any.push(d[2][3]);
+                            unanalyzed.push(d[2][5]);
                         } else {
-                            inlineCallbacks.push(sum_data(d[2][1], project));
-                            deferreds.push(sum_data(d[3][1], project));
-                            asyncDefs.push(sum_data(d[4][1], project));
+                            precise.push(sum_data(d[3], 1, project));
+                            imprecise.push(sum_data(d[3], 2, project));
+                            any.push(sum_data(d[3], 3, project));
+                            unanalyzed.push(sum_data(d[3], 5, project));
                         }
                     }
 
@@ -221,22 +224,28 @@
                         labels: labels,
                         datasets: [
                             {
-                                label: 'inlineCallbacks / cachedInlineCallbacks',
-                                borderColor: "rgb(255, 99, 132)",  // Red
-                                backgroundColor: "rgb(255, 99, 132)",
-                                data: inlineCallbacks,
-                            },
-                            {
-                                label: 'ensureDeferred / maybeDeferred / succeed / failure',
+                                label: 'Precise',
                                 borderColor: "rgb(75, 192, 192)",  // Green
                                 backgroundColor: "rgb(75, 192, 192)",
-                                data: deferreds,
+                                data: precise,
                             },
                             {
-                                label: 'async',
+                                label: 'Imprecise',
+                                borderColor: "rgb(255, 205, 86)",  // Yellow
+                                backgroundColor: "rgb(255, 205, 86)",
+                                data: imprecise,
+                            },
+                            {
+                                label: 'Any',
                                 borderColor: "rgb(54, 162, 235)",  // Blue
                                 backgroundColor: "rgb(54, 162, 235)",
-                                data: asyncDefs,
+                                data: any,
+                            },
+                            {
+                                label: 'Unanalyzed',
+                                borderColor: "rgb(255, 99, 132)",  // Red
+                                backgroundColor: "rgb(255, 99, 132)",
+                                data: unanalyzed,
                             },
                         ]
                     };
@@ -263,62 +272,32 @@
                 when.innerText = "From " + snapshot[1];
                 snapshotContainer.appendChild(when);
 
-                // Generate module data, which is of the form:
-                //
-                // {
-                //   <module name>: [<count>, <count>, <count>]
-                // }
-                let modules = {};
-                let idxs = [2, 3, 4];
-                for (let i = 0; i < idxs.length; ++i) {
-                    let idx = idxs[i];
-
-                    // Iterate each module in the data and add the counts.
-                    for (let moduleName in snapshot[idx][1]) {
-                        let count = snapshot[idx][1][moduleName];
-                        if (!modules[moduleName]) {
-                            // Fill previous entries with 0.
-                            let data = [];
-                            for (let j = 0; j < i; ++j) {
-                                data.push(0);
-                            }
-                            modules[moduleName] = data;
-                        }
-                        modules[moduleName].push(count);
-                    }
-
-                    // Iterate each module in the mapping and ensure they have the
-                    // proper number of entries.
-                    if (i == 0) {
-                        continue;
-                    }
-                    for (let moduleName in modules) {
-                        if (modules[moduleName].length < (i + 1)) {
-                            modules[moduleName].push(0);
-                        }
-                    }
-                }
+                // Module level data.
+                let modules = snapshot[3];
 
                 // Finally, actually create the table.
                 let moduleNames = Object.keys(modules).sort();
                 let snapshotTable = document.createElement("table");
                 let row = document.createElement("tr");
-                for (let column of ["Module", "inlineCallbacks<br>cachedInlineCallbacks", "ensureDeferred<br>maybeDeferred<br>succeed<br>failure", "async"]) {
+                for (let column of ["Module", "Precise", "Imprecise", "Any", "Unanalyzed"]) {
                     let cell = document.createElement("th");
                     cell.innerHTML = column;
                     row.appendChild(cell);
                 }
                 snapshotTable.appendChild(row);
 
+                // Only show the four data points of interest.
+                let indices = [1, 2, 3, 5]
+
                 for (let moduleName of moduleNames) {
                     let row = document.createElement("tr");
                     let cell = document.createElement("th");
                     cell.className = "left";
-                    cell.innerText = moduleName.replace("/", ".");
+                    cell.innerText = moduleName;
                     row.appendChild(cell);
-                    for (let count of modules[moduleName]) {
+                    for (let idx of indices) {
                         cell = document.createElement("td");
-                        cell.innerText = count;
+                        cell.innerText = modules[moduleName][idx];
                         row.appendChild(cell);
                     }
                     snapshotTable.appendChild(row);

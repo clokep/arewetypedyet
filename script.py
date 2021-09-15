@@ -4,15 +4,17 @@ from pathlib import Path
 import json
 import subprocess
 
+import attr
+
 from git import Repo
 
 Project = namedtuple("Project", ("name", "initial_commit", "branch", "paths"))
 
 # Constants.
 PROJECTS = (
-    Project("synapse", "4f475c7697722e946e39e42f38f3dd03a95d8765", "develop", ("synapse", "tests", "contrib", "docs", "scripts")),
-    Project("sydent", "2360cd427fb5cbebd34baa02ccb05ca2211eab63", "main", ("sydent", "tests", "matrix_is_test", "docs", "scripts")),
-    Project("sygnal", "2eb2dd4eb6d83a17f260af02731940427e67feea", "main", ("sygnal", "tests", "docs")),
+    Project("synapse", "4f475c7697722e946e39e42f38f3dd03a95d8765", "develop", ("synapse", "tests")),
+    Project("sydent", "2360cd427fb5cbebd34baa02ccb05ca2211eab63", "main", ("sydent", "tests")),
+    Project("sygnal", "2eb2dd4eb6d83a17f260af02731940427e67feea", "main", ("sygnal", "tests")),
 )
 
 # Start at the nearest Monday.
@@ -21,22 +23,53 @@ while LATEST_MONDAY.weekday():
     LATEST_MONDAY -= timedelta(days=1)
 
 
-def search(string, root, paths):
-    result = subprocess.run(
-        ["grep", "-rE", "\\b" + string + "\\b", *paths],
+@attr.s(slots=True, auto_attribs=True)
+class Result:
+    # Total lines in the module.
+    lines: int = 0
+    # Precise and imprecise type hints.
+    precise: int = 0
+    imprecise: int = 0
+    # The number of any type hints.
+    any: int = 0
+    # The number of empty lines.
+    empty: int = 0
+    # The number of lines skipped.
+    unanalyzed: int = 0
+
+    def __add__(self, other):
+        self.lines += other.lines
+        self.precise += other.precise
+        self.imprecise += other.precise
+        self.any += other.any
+        self.empty += other.empty
+        self.unanalyzed += other.unanalyzed
+        return self
+
+
+def search(root, paths):
+    subprocess.run(
+        ["mypy", "--lineprecision-report", "../.mypy-output", "--exclude", "synapse/storage/schema", *paths],
         capture_output=True,
         cwd=root)
 
-    total = 0
-    by_module = defaultdict(int)
-    for line in result.stdout.splitlines():
-        filename, match = line.split(b":", 1)
-        filename = filename.decode("ascii")
-        module = "/".join(filename.split("/", 2)[:2])
-        # If there's a file extension, strip it off.
-        module = module.split(".")[0]
-        total += 1
-        by_module[module] += 1
+    total = Result()
+    by_module = defaultdict(Result)
+
+    with open(".mypy-output/lineprecision.txt") as f:
+        # Get rid of the first two lines.
+        f.readline()
+        f.readline()
+        for line in f.readlines():
+            parts = line.split()
+            module = parts[0]
+            current = Result(*map(int, parts[1:]))
+
+            # Trim to the second-level module (e.g. foo.bar.* all gets grouped together).
+            module = ".".join(module.split(".", 2)[:2])
+
+            total += current
+            by_module[module] += current
 
     return total, by_module
 
@@ -46,17 +79,14 @@ def search(string, root, paths):
 #
 # {
 #   "project": [
-#     <commit hash>, <date as a string>, <inlineCallbacks results>, <Deferred results>, <async results>
+#     <commit hash>, <date as a string>, <total results>, <module result>
 #   ]
 # }
 #
 # Each of the results is of the form:
 #
 # [
-#   <total>,
-#   {
-#     <module name>: <count>
-#   }
+#   <total>, <precise>, <imprecise>, <any>, <empty>, <unanalyzed>
 # ]
 data = {}
 
@@ -90,23 +120,16 @@ for project in PROJECTS:
             repo.head.reference = commit
             repo.head.reset(index=True, working_tree=True)
 
-            # Find the number of inlineCallback functions.
-            inlineCallbacks_result = search("(inlineCallbacks|cachedInlineCallbacks)", project_dir, project.paths)
+            # Run mypy.
+            total, by_module = search(project_dir, project.paths)
 
-            # Additional helpers.
-            deferreds_results = search("(ensureDeferred|maybeDeferred|succeed|failure)\\(", project_dir, project.paths)
-
-            # Find the number of async functions.
-            async_result = search("async def", project_dir, project.paths)
-
-            print(commit, inlineCallbacks_result[0], deferreds_results[0], async_result[0])
+            print(commit, attr.astuple(total))
 
             project_data.append((
                 commit.hexsha,
                 str(committed_date),
-                inlineCallbacks_result,
-                deferreds_results,
-                async_result,
+                attr.astuple(total),
+                {k: attr.astuple(v) for k, v in by_module.items()}
             ))
 
     # Empty line.
