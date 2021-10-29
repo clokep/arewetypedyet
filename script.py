@@ -40,7 +40,7 @@ class Result:
     def __add__(self, other):
         self.lines += other.lines
         self.precise += other.precise
-        self.imprecise += other.precise
+        self.imprecise += other.imprecise
         self.any += other.any
         self.empty += other.empty
         self.unanalyzed += other.unanalyzed
